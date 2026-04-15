@@ -5,8 +5,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-class YtdlpService:
     def __init__(self):
+        import os
         self.ydl_opts = {
             'quiet': True,
             'no_warnings': True,
@@ -15,15 +15,25 @@ class YtdlpService:
             'nocheckcertificate': True,
             'no_color': True,
             'geo_bypass': True,
-            # Removed aggressive player_client list which can hide some formats
-            # Keeping it simple for standard extraction first
+            # YouTube specific bypass attempts
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['web', 'web_embedded', 'ios', 'mweb'],
+                    'player_skip': ['hls', 'dash']
+                }
+            },
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Referer': 'https://www.google.com/'
             }
         }
+        
+        # Fallback to cookies.txt if exists in the backend root
+        cookie_path = os.path.join(os.getcwd(), "cookies.txt")
+        if os.path.exists(cookie_path):
+            self.ydl_opts['cookiefile'] = cookie_path
 
     async def get_metadata(self, url: str) -> Dict[str, Any]:
         loop = asyncio.get_event_loop()
@@ -80,7 +90,11 @@ class YtdlpService:
         for f in raw_formats:
             # We only want formats that have BOTH video and audio for direct downloading
             # acodec != 'none' means it has audio, vcodec != 'none' means it has video
-            if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+            # CRITICAL: Filter out HLS/M3U8 playlists (manifests) as they are not playable via proxy
+            protocol = f.get('protocol', '')
+            if (f.get('vcodec') != 'none' and f.get('acodec') != 'none' and 
+                'm3u8' not in protocol and 'hls' not in protocol):
+                
                 height = f.get('height') or 0
                 ext = f.get('ext') or 'mp4'
                 

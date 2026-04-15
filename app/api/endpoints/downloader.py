@@ -53,6 +53,7 @@ async def stream_media(
     
     # For video, proxy the bytes to ensure '1-click' download and bypass hotlinking
     import httpx
+    import urllib.parse
     from fastapi.responses import StreamingResponse
     try:
         data = await ytdlp_service.get_metadata(url)
@@ -73,20 +74,29 @@ async def stream_media(
 
         # We proxy the request to force a download attachment behavior
         async def generate_video_stream():
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
                 async with client.stream("GET", target_format["url"], headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                    'Referer': target_format.get('url', '')
                 }) as r:
+                    # Capture the original content type if available
+                    content_type = r.headers.get("Content-Type", "application/octet-stream")
                     async for chunk in r.aiter_bytes():
                         yield chunk
 
-        filename = f"{data['title'][:50]}.{target_format.get('ext', 'mp4')}"
-        # Ensure filename is URL-safeish if needed, or let browser handle
+        # Clean filename and encode for HTTP headers (avoids latin-1 errors with emojis)
+        safe_title = "".join([c for c in data['title'] if c.isalnum() or c in (' ', '-', '_')]).strip()[:50]
+        if not safe_title: safe_title = "download"
+        
+        filename = f"{safe_title}.{target_format.get('ext', 'mp4')}"
+        encoded_filename = urllib.parse.quote(filename)
+        
         return StreamingResponse(
             generate_video_stream(),
             media_type="application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename=\"{filename}\""
+                # filename* uses RFC 5987 to support non-ASCII (emojis) correctly
+                "Content-Disposition": f"attachment; filename=\"{filename.encode('ascii', 'ignore').decode()}\"; filename*=UTF-8''{encoded_filename}"
             }
         )
 
