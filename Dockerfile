@@ -12,6 +12,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
+    build-essential \
+    python3-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container
