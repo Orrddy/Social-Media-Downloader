@@ -51,29 +51,45 @@ async def stream_media(
             logger.error(f"Streaming error for {url}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
-    # For video, redirect directly to the signed source URL as requested
-    # We use a 307 Temporary Redirect to ensure the browser handles the download
-    from fastapi.responses import RedirectResponse
+    # For video, proxy the bytes to ensure '1-click' download and bypass hotlinking
+    import httpx
+    from fastapi.responses import StreamingResponse
     try:
         data = await ytdlp_service.get_metadata(url)
-        # Find the specific format requested or default to first video
-        target_url = None
+        target_format = None
         for f in data.get("formats", []):
             if f["type"] == "video" and (not quality or f["quality"] == quality):
-                target_url = f["url"]
+                target_format = f
                 break
         
-        if not target_url:
-            # Fallback to any video format
+        if not target_format:
             for f in data.get("formats", []):
                 if f["type"] == "video":
-                    target_url = f["url"]
+                    target_format = f
                     break
         
-        if target_url:
-            return RedirectResponse(url=target_url)
-        
-        raise HTTPException(status_code=404, detail="Requested video format not found")
+        if not target_format:
+            raise HTTPException(status_code=404, detail="Requested video format not found")
+
+        # We proxy the request to force a download attachment behavior
+        async def generate_video_stream():
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                async with client.stream("GET", target_format["url"], headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+                }) as r:
+                    async for chunk in r.aiter_bytes():
+                        yield chunk
+
+        filename = f"{data['title'][:50]}.{target_format.get('ext', 'mp4')}"
+        # Ensure filename is URL-safeish if needed, or let browser handle
+        return StreamingResponse(
+            generate_video_stream(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"{filename}\""
+            }
+        )
+
     except Exception as e:
-        logger.error(f"Redirect error for {url}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to resolve direct download link: {str(e)}")
+        logger.error(f"Proxy error for {url}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate download: {str(e)}")

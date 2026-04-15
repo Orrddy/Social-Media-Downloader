@@ -63,43 +63,70 @@ class YtdlpService:
             ext = f.get("ext", "")
             
             # Identify Video Formats
-            # We check for height OR vcodec. Some platforms (TikTok) don't label vcodec well.
-            if (vcodec != "none" or height) and ext != "m3u8":
-                res = height
-                # Try to get a human-readable quality
-                quality = f"{res}p" if res else f.get("format_note") or f.get("format_id", "Video")
+        
+        # YouTube specifically: look for highest quality single-file or best merged if available
+        # However, for '1-click direct download', we MUST have a format with both audio and video
+        
+        raw_formats = info.get('formats', [])
+        
+        # 1. Try to find the absolute best video formats with integrated audio
+        # We want to label 4K (2140p), 2K (1440p), HD (1080p), etc.
+        
+        seen_qualities = set()
+        
+        # Sort formats by resolution (height) descending
+        raw_formats.sort(key=lambda x: x.get('height') or 0, reverse=True)
+        
+        for f in raw_formats:
+            # We only want formats that have BOTH video and audio for direct downloading
+            # acodec != 'none' means it has audio, vcodec != 'none' means it has video
+            if f.get('vcodec') != 'none' and f.get('acodec') != 'none':
+                height = f.get('height') or 0
+                ext = f.get('ext') or 'mp4'
                 
-                # TikTok specific mapping for "HD"
-                if "tiktok" in original_url.lower() and not res:
-                    if "hd" in quality.lower():
-                        quality = "HD Video"
-                    else:
-                        quality = "Normal Video"
-
-                formats.append({
-                    "type": "video",
-                    "quality": quality,
-                    "url": f.get("url"),
-                    "ext": ext,
-                    "filesize": f.get("filesize") or f.get("filesize_approx")
-                })
-
-        # 2. Add Audio (MP3) Option via our internal proxy
-        formats.append({
-            "type": "audio",
-            "quality": "mp3",
-            "url": f"/api/stream?url={original_url}&type=audio"
-        })
-
-        # 3. Clean and Deduplicate
-        processed_formats = self._deduplicate_formats(formats)
+                quality_label = f"Standard"
+                if height >= 2160: quality_label = "4K Ultra HD"
+                elif height >= 1440: quality_label = "2K Quad HD"
+                elif height >= 1080: quality_label = "1080p Full HD"
+                elif height >= 720: quality_label = "720p HD"
+                elif height >= 480: quality_label = "480p"
+                
+                # We only need one format per quality label to keep UI clean
+                if quality_label not in seen_qualities:
+                    formats.append({
+                        "id": f.get("format_id"),
+                        "url": f.get("url"),
+                        "ext": ext,
+                        "quality": quality_label,
+                        "filesize": f.get("filesize") or f.get("filesize_approx"),
+                        "type": "video",
+                        "height": height
+                    })
+                    seen_qualities.add(quality_label)
+        
+        # 2. Extract best audio if available
+        best_audio = None
+        for f in raw_formats:
+            if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                if not best_audio or (f.get('abr') or 0) > (best_audio.get('abr') or 0):
+                    best_audio = f
+        
+        if best_audio:
+            formats.append({
+                "id": best_audio.get("format_id"),
+                "url": best_audio.get("url"),
+                "ext": "mp3", # We convert to mp3 in the stream endpoint
+                "quality": f"{int(best_audio.get('abr') or 128)}kbps Audio",
+                "filesize": best_audio.get("filesize") or best_audio.get("filesize_approx"),
+                "type": "audio"
+            })
 
         return {
             "title": info.get("title", "Unknown Title"),
-            "thumbnail": info.get("thumbnail") or (info.get("thumbnails", [{}])[-1].get("url") if info.get("thumbnails") else None),
+            "thumbnail": info.get("thumbnail"),
             "duration": self._format_duration(info.get("duration")),
             "platform": info.get("extractor_key", "unknown").lower(),
-            "formats": processed_formats
+            "formats": formats
         }
 
     def _format_duration(self, seconds: Optional[int]) -> str:
