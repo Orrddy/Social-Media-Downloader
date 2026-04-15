@@ -51,6 +51,29 @@ async def stream_media(
             logger.error(f"Streaming error for {url}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
     
-    # For video, if we wanted to proxy/stream video, we could add logic here.
-    # Currently, video URLs provided are usually direct links to the platform.
-    raise HTTPException(status_code=400, detail="Direct video streaming not implemented yet. Use direct URLs.")
+    # For video, redirect directly to the signed source URL as requested
+    # We use a 307 Temporary Redirect to ensure the browser handles the download
+    from fastapi.responses import RedirectResponse
+    try:
+        data = await ytdlp_service.get_metadata(url)
+        # Find the specific format requested or default to first video
+        target_url = None
+        for f in data.get("formats", []):
+            if f["type"] == "video" and (not quality or f["quality"] == quality):
+                target_url = f["url"]
+                break
+        
+        if not target_url:
+            # Fallback to any video format
+            for f in data.get("formats", []):
+                if f["type"] == "video":
+                    target_url = f["url"]
+                    break
+        
+        if target_url:
+            return RedirectResponse(url=target_url)
+        
+        raise HTTPException(status_code=404, detail="Requested video format not found")
+    except Exception as e:
+        logger.error(f"Redirect error for {url}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to resolve direct download link: {str(e)}")

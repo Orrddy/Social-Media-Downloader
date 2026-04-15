@@ -13,29 +13,31 @@ class YtdlpService:
             'format': 'best',
             'extract_flat': False,
             'nocheckcertificate': True,
-            'ignoreerrors': True,
             'no_color': True,
             'geo_bypass': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['android', 'ios'],
-                    'skip': ['hls', 'dash']
-                }
-            },
+            # Removed aggressive player_client list which can hide some formats
+            # Keeping it simple for standard extraction first
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.google.com/'
             }
         }
 
     async def get_metadata(self, url: str) -> Dict[str, Any]:
         loop = asyncio.get_event_loop()
         try:
-            # We create a new instance per request to avoid state issues
+            # We use a fresh YDL instance with specific referer for some platforms
+            opts = self.ydl_opts.copy()
+            if "tiktok" in url:
+                opts['http_headers']['Referer'] = 'https://www.tiktok.com/'
+            elif "instagram" in url:
+                opts['http_headers']['Referer'] = 'https://www.instagram.com/'
+            
             info = await loop.run_in_executor(
                 None, 
-                lambda: yt_dlp.YoutubeDL(self.ydl_opts).extract_info(url, download=False)
+                lambda: yt_dlp.YoutubeDL(opts).extract_info(url, download=False)
             )
             
             if not info:
