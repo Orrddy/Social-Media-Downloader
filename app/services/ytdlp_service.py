@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 import logging
 
 logger = logging.getLogger(__name__)
-
+class YtdlpService:
     def __init__(self):
         import os
         self.ydl_opts = {
