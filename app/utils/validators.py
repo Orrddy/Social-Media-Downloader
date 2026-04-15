@@ -4,11 +4,11 @@ from fastapi import HTTPException
 # Regex for supported platforms
 # YouTube, TikTok, Facebook, Instagram, Twitter (X), Telegram
 PLATFORMS_REGEX = {
-    "youtube": r"(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+",
-    "tiktok": r"(https?://)?(www\.|vm\.)?tiktok\.com/.+",
-    "facebook": r"(https?://)?(www\.)?facebook\.com/.+",
-    "instagram": r"(https?://)?(www\.)?instagram\.com/.+",
-    "twitter": r"(https?://)?(www\.|x\.)?(twitter|x)\.com/.+",
+    "youtube": r"(https?://)?(www\.|m\.)?(youtube\.com|youtu\.be)/.+",
+    "tiktok": r"(https?://)?(www\.|vm\.|vt\.|v\.)?tiktok\.com/.+",
+    "facebook": r"(https?://)?(www\.|m\.|web\.)?facebook\.com/.+",
+    "instagram": r"(https?://)?(www\.)?instagram\.com/(p|reels|tv|stories)/.+",
+    "twitter": r"(https?://)?(www\.|x\.|mobile\.)?(twitter|x)\.com/.+",
     "telegram": r"(https?://)?(t\.)?me/.+"
 }
 
