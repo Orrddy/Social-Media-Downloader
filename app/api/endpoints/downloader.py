@@ -1,105 +1,164 @@
+import urllib.parse
+import httpx
+import yt_dlp
+import asyncio
+import copy
+import logging
+
 from fastapi import APIRouter, HTTPException, Request, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
 from app.services.ytdlp_service import ytdlp_service
 from app.services.ffmpeg_service import ffmpeg_service
 from app.utils.validators import validate_url
 from app.core.security import limiter
 from app.core.config import settings
-import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
 class DownloadRequest(BaseModel):
     url: str
+
 
 @router.post("/download")
 @limiter.limit(settings.RATE_LIMIT_DEFAULT)
 async def get_download_options(request: Request, body: DownloadRequest):
     """
-    Returns metadata and download options for a given URL.
+    Extracts metadata and available download formats for a given URL.
+    CDN URLs are NOT returned — format IDs are used instead and resolved
+    server-side at download time via the /stream endpoint.
     """
-    url = body.url
+    url = body.url.strip()
     if not validate_url(url):
         raise HTTPException(status_code=400, detail="Unsupported platform or invalid URL")
-    
+
     try:
         data = await ytdlp_service.get_metadata(url)
         return data
     except Exception as e:
-        logger.error(f"Download options error for {url}: {e}")
+        logger.error(f"Metadata extraction error for {url}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/stream")
 @limiter.limit(settings.RATE_LIMIT_DEFAULT)
 async def stream_media(
-    request: Request, 
-    url: str = Query(..., description="The media URL to stream"),
-    type: str = Query(..., description="Format type: video or audio"),
-    quality: str = Query(None, description="Requested quality (e.g., 720p, mp3)")
+    request: Request,
+    url: str = Query(..., description="The original social media URL to download"),
+    type: str = Query(..., description="Format type: 'video' or 'audio'"),
+    quality: str = Query(None, description="Quality label, e.g. '1080p Full HD', '720p HD'")
 ):
     """
-    Streams media content. Currently handles on-the-fly MP3 conversion for audio requests.
+    Streams media content. For audio, converts to MP3 via FFmpeg.
+    For video, re-extracts the CDN URL server-side and proxies the bytes,
+    which forces a 'Save As' dialog and avoids IP-locked CDN link issues.
     """
     if not validate_url(url):
-        raise HTTPException(status_code=400, detail="Invalid URL")
-    
+        raise HTTPException(status_code=400, detail="Invalid or unsupported URL")
+
     if type == "audio":
         try:
             return await ffmpeg_service.stream_audio_as_mp3(url)
         except Exception as e:
-            logger.error(f"Streaming error for {url}: {e}")
+            logger.error(f"Audio streaming error for {url}: {e}")
             raise HTTPException(status_code=500, detail=str(e))
-    
-    # For video, proxy the bytes to ensure '1-click' download and bypass hotlinking
-    import httpx
-    import urllib.parse
-    from fastapi.responses import StreamingResponse
+
+    # --- Video: re-fetch metadata to get a fresh, server-side CDN URL ---
     try:
         data = await ytdlp_service.get_metadata(url)
+
+        # Match the requested quality label
         target_format = None
         for f in data.get("formats", []):
             if f["type"] == "video" and (not quality or f["quality"] == quality):
                 target_format = f
                 break
-        
+
+        # Fallback to any available video format
         if not target_format:
             for f in data.get("formats", []):
                 if f["type"] == "video":
                     target_format = f
                     break
-        
+
         if not target_format:
             raise HTTPException(status_code=404, detail="Requested video format not found")
 
-        # We proxy the request to force a download attachment behavior
+        # Get the live CDN URL server-side using the format_id
+        format_id = target_format.get("id")
+        cdn_url = await _resolve_cdn_url(url, format_id)
+
+        if not cdn_url:
+            raise HTTPException(status_code=502, detail="Could not resolve a direct download URL")
+
+        # Proxy the video stream through the backend so browsers see it as an attachment
         async def generate_video_stream():
             async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                async with client.stream("GET", target_format["url"], headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                    'Referer': target_format.get('url', '')
+                async with client.stream("GET", cdn_url, headers={
+                    'User-Agent': (
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                        'AppleWebKit/537.36 (KHTML, like Gecko) '
+                        'Chrome/121.0.0.0 Safari/537.36'
+                    ),
+                    'Referer': cdn_url,
                 }) as r:
-                    # Capture the original content type if available
-                    content_type = r.headers.get("Content-Type", "application/octet-stream")
                     async for chunk in r.aiter_bytes():
                         yield chunk
 
-        # Clean filename and encode for HTTP headers (avoids latin-1 errors with emojis)
-        safe_title = "".join([c for c in data['title'] if c.isalnum() or c in (' ', '-', '_')]).strip()[:50]
-        if not safe_title: safe_title = "download"
-        
-        filename = f"{safe_title}.{target_format.get('ext', 'mp4')}"
+        # Build safe ASCII + UTF-8 RFC 5987 filename
+        raw_title = data.get('title', 'download')
+        safe_title = "".join(
+            c for c in raw_title if c.isalnum() or c in (' ', '-', '_')
+        ).strip()[:50] or "download"
+
+        ext = target_format.get('ext', 'mp4')
+        filename = f"{safe_title}.{ext}"
         encoded_filename = urllib.parse.quote(filename)
-        
+
         return StreamingResponse(
             generate_video_stream(),
             media_type="application/octet-stream",
             headers={
-                # filename* uses RFC 5987 to support non-ASCII (emojis) correctly
-                "Content-Disposition": f"attachment; filename=\"{filename.encode('ascii', 'ignore').decode()}\"; filename*=UTF-8''{encoded_filename}"
+                "Content-Disposition": (
+                    f'attachment; filename="{filename.encode("ascii", "ignore").decode()}"; '
+                    f"filename*=UTF-8''{encoded_filename}"
+                )
             }
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Proxy error for {url}: {e}")
+        logger.error(f"Video proxy error for {url}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate download: {str(e)}")
+
+
+async def _resolve_cdn_url(original_url: str, format_id: str) -> str:
+    """
+    Re-runs yt-dlp server-side to obtain a fresh, valid CDN URL for
+    the specified format_id. This avoids serving IP-locked or expired
+    links that were extracted during the initial metadata call.
+    """
+    loop = asyncio.get_running_loop()
+
+    def _extract():
+        opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'format': format_id or 'best',
+            'nocheckcertificate': True,
+            'geo_bypass': True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(original_url, download=False)
+            # For a specific format, the url is at top-level
+            return info.get('url') or info.get('formats', [{}])[-1].get('url')
+
+    try:
+        return await loop.run_in_executor(None, _extract)
+    except Exception as e:
+        logger.error(f"CDN URL resolution failed for {original_url}: {e}")
+        return None

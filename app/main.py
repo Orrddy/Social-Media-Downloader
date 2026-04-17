@@ -13,16 +13,16 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# Set CORS middleware
+# CORS — only allow configured origins; credentials not needed for this public API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Simplified for debugging connectivity
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.ALLOWED_HOSTS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
-# Debug Middleware to trace 400 errors
+# Request/response logging middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     logger.info(f"Incoming request: {request.method} {request.url}")
@@ -30,7 +30,7 @@ async def log_requests(request: Request, call_next):
     logger.info(f"Response status: {response.status_code}")
     return response
 
-# Setup Rate Limiting
+# Setup Rate Limiting (global via SlowAPIMiddleware)
 setup_rate_limiting(app)
 
 # Include Routers

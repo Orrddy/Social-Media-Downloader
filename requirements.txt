@@ -7,4 +7,3 @@ pydantic-settings==2.1.0
 python-dotenv==1.0.0
 starlette==0.35.1
 httpx==0.26.0
-streaming-form-data==1.13.0
