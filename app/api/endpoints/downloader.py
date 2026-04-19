@@ -108,15 +108,23 @@ async def stream_media(
         filename = f"{safe_title}.{ext}"
         encoded_filename = urllib.parse.quote(filename)
 
+        # Route through FFmpeg if it's a playlist/manifest (used heavily by Twitter/Insta)
+        is_manifest = ".m3u8" in cdn_url.lower() or ".mpd" in cdn_url.lower()
+        if is_manifest:
+            return await ffmpeg_service.stream_video_ffmpeg(cdn_url, filename)
+
         # Initialize the client first to grab headers BEFORE response stream setup
         client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
-        user_agent = ytdlp_service._base_opts.get('http_headers', {}).get('User-Agent', 'Mozilla/5.0')
-        req = client.build_request("GET", cdn_url, headers={
-            'User-Agent': user_agent,
-            'Referer': cdn_url,
-        })
+        opts = ytdlp_service._build_opts(url)
+        http_headers = opts.get('http_headers', {})
         
+        req = client.build_request("GET", cdn_url, headers=http_headers)
         r = await client.send(req, stream=True)
+
+        if r.status_code != 200:
+            await r.aclose()
+            await client.aclose()
+            raise HTTPException(status_code=502, detail=f"Upstream CDN responded with {r.status_code}")
 
         headers = {
             "Content-Disposition": (

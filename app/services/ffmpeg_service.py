@@ -84,5 +84,59 @@ class FfmpegService:
             }
         )
 
+    async def stream_video_ffmpeg(self, stream_url: str, filename: str) -> StreamingResponse:
+        """
+        Pipes an M3U8 or DASH stream through FFmpeg and exports directly as an MP4 byte stream.
+        This provides compatibility for Instagram/Twitter videos that exclusively use manifests.
+        """
+        # FFmpeg command: stream input, copy codecs, fragment it to allow piped MP4 streaming
+        command = [
+            'ffmpeg',
+            '-i', stream_url,
+            '-c', 'copy',
+            '-f', 'mp4',
+            '-movflags', 'frag_keyframe+empty_moov',
+            'pipe:1'
+        ]
+
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+
+        async def generate():
+            try:
+                while True:
+                    chunk = await process.stdout.read(65536)
+                    if not chunk:
+                        break
+                    yield chunk
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"FFmpeg MP4 streaming error: {e}")
+            finally:
+                if process.returncode is None:
+                    try:
+                        process.kill()
+                        await process.wait()
+                    except ProcessLookupError:
+                        pass
+                    except Exception as kill_err:
+                        logger.warning(f"Could not kill FFmpeg process: {kill_err}")
+
+        encoded_filename = urllib.parse.quote(filename)
+        return StreamingResponse(
+            generate(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{filename.encode("ascii", "ignore").decode()}"; '
+                    f"filename*=UTF-8''{encoded_filename}"
+                )
+            }
+        )
+
 
 ffmpeg_service = FfmpegService()

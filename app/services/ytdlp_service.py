@@ -13,7 +13,6 @@ class YtdlpService:
         self._base_opts = {
             'quiet': True,
             'no_warnings': True,
-            'format': 'best',
             'extract_flat': False,
             'nocheckcertificate': True,
             'no_color': True,
@@ -85,10 +84,10 @@ class YtdlpService:
             # Skip HLS/M3U8 manifest streams — they cannot be proxied as a single byte range
             protocol = f.get('protocol', '')
             has_video = f.get('vcodec', 'none') != 'none'
-            has_audio = f.get('acodec', 'none') != 'none'
             is_manifest = 'm3u8' in protocol or 'hls' in protocol
 
-            if not (has_video and has_audio and not is_manifest):
+            # Accept all formats which possess a video codec (regardless of exact audio tracking logic).
+            if not has_video or is_manifest:
                 continue
 
             if not f.get('url'):
