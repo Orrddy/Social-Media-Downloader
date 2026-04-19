@@ -159,5 +159,25 @@ class YtdlpService:
             return f"{hours:02d}:{mins:02d}:{secs:02d}"
         return f"{mins:02d}:{secs:02d}"
 
+    async def get_stream_url(self, url: str, format_id: str = None) -> str:
+        loop = asyncio.get_running_loop()
+        opts = self._build_opts(url)
+        opts['format'] = format_id or 'best'
+        def _extract():
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return info.get('url') or info.get('formats', [{}])[-1].get('url')
+        return await loop.run_in_executor(None, _extract)
+
+    async def get_best_audio_info(self, url: str):
+        loop = asyncio.get_running_loop()
+        opts = self._build_opts(url)
+        opts['format'] = 'bestaudio/best'
+        def _extract():
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                return info.get('url'), info.get('title', 'audio')
+        return await loop.run_in_executor(None, _extract)
+
 
 ytdlp_service = YtdlpService()

@@ -15,21 +15,9 @@ class FfmpegService:
         Extracts the best audio stream URL via yt-dlp and pipes it through
         FFmpeg to produce an MP3 stream. Returned as a StreamingResponse.
         """
-        # Use get_running_loop() — get_event_loop() is deprecated in Python 3.10+
-        loop = asyncio.get_running_loop()
-
-        def get_stream_url():
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'quiet': True,
-                'no_warnings': True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return info.get('url'), info.get('title', 'audio')
-
         try:
-            stream_url, title = await loop.run_in_executor(None, get_stream_url)
+            from app.services.ytdlp_service import ytdlp_service
+            stream_url, title = await ytdlp_service.get_best_audio_info(url)
         except Exception as e:
             logger.error(f"Error getting stream URL for audio: {e}")
             raise Exception(f"Failed to get audio stream: {str(e)}")
@@ -63,12 +51,15 @@ class FfmpegService:
                     if not chunk:
                         break
                     yield chunk
+            except asyncio.CancelledError:
+                pass  # Request cut off
             except Exception as e:
                 logger.error(f"Audio streaming error: {e}")
             finally:
                 if process.returncode is None:
                     try:
                         process.kill()
+                        await process.wait()  # <--- REQUIRED to reap the zombie UNIX process
                     except ProcessLookupError:
                         pass  # Process already exited — acceptable
                     except Exception as kill_err:

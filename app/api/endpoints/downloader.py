@@ -87,26 +87,16 @@ async def stream_media(
         if not target_format:
             raise HTTPException(status_code=404, detail="Requested video format not found")
 
-        # Get the live CDN URL server-side using the format_id
+        # Get the live CDN URL server-side using the format_id securely
         format_id = target_format.get("id")
-        cdn_url = await _resolve_cdn_url(url, format_id)
+        try:
+            cdn_url = await ytdlp_service.get_stream_url(url, format_id)
+        except Exception as e:
+            logger.error(f"CDN URL resolution failed for {url}: {e}")
+            cdn_url = None
 
         if not cdn_url:
             raise HTTPException(status_code=502, detail="Could not resolve a direct download URL")
-
-        # Proxy the video stream through the backend so browsers see it as an attachment
-        async def generate_video_stream():
-            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                async with client.stream("GET", cdn_url, headers={
-                    'User-Agent': (
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                        'AppleWebKit/537.36 (KHTML, like Gecko) '
-                        'Chrome/121.0.0.0 Safari/537.36'
-                    ),
-                    'Referer': cdn_url,
-                }) as r:
-                    async for chunk in r.aiter_bytes():
-                        yield chunk
 
         # Build safe ASCII + UTF-8 RFC 5987 filename
         raw_title = data.get('title', 'download')
@@ -118,15 +108,42 @@ async def stream_media(
         filename = f"{safe_title}.{ext}"
         encoded_filename = urllib.parse.quote(filename)
 
+        # Initialize the client first to grab headers BEFORE response stream setup
+        client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
+        user_agent = ytdlp_service._base_opts.get('http_headers', {}).get('User-Agent', 'Mozilla/5.0')
+        req = client.build_request("GET", cdn_url, headers={
+            'User-Agent': user_agent,
+            'Referer': cdn_url,
+        })
+        
+        r = await client.send(req, stream=True)
+
+        headers = {
+            "Content-Disposition": (
+                f'attachment; filename="{filename.encode("ascii", "ignore").decode()}"; '
+                f"filename*=UTF-8''{encoded_filename}"
+            )
+        }
+        
+        # Inject content length for progress browser mapping
+        if "Content-Length" in r.headers:
+            headers["Content-Length"] = r.headers["Content-Length"]
+
+        async def generate_video_stream():
+            try:
+                # 64KB generator chunks to prevent heavy active RAM buffering
+                async for chunk in r.aiter_bytes(chunk_size=65536):
+                    yield chunk
+            except asyncio.CancelledError:
+                pass # The client killed the download
+            finally:
+                await r.aclose()
+                await client.aclose()
+
         return StreamingResponse(
             generate_video_stream(),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="{filename.encode("ascii", "ignore").decode()}"; '
-                    f"filename*=UTF-8''{encoded_filename}"
-                )
-            }
+            media_type=r.headers.get("Content-Type", "application/octet-stream"),
+            headers=headers
         )
 
     except HTTPException:
@@ -134,31 +151,3 @@ async def stream_media(
     except Exception as e:
         logger.error(f"Video proxy error for {url}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate download: {str(e)}")
-
-
-async def _resolve_cdn_url(original_url: str, format_id: str) -> str:
-    """
-    Re-runs yt-dlp server-side to obtain a fresh, valid CDN URL for
-    the specified format_id. This avoids serving IP-locked or expired
-    links that were extracted during the initial metadata call.
-    """
-    loop = asyncio.get_running_loop()
-
-    def _extract():
-        opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'format': format_id or 'best',
-            'nocheckcertificate': True,
-            'geo_bypass': True,
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(original_url, download=False)
-            # For a specific format, the url is at top-level
-            return info.get('url') or info.get('formats', [{}])[-1].get('url')
-
-    try:
-        return await loop.run_in_executor(None, _extract)
-    except Exception as e:
-        logger.error(f"CDN URL resolution failed for {original_url}: {e}")
-        return None
