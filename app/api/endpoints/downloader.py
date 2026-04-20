@@ -4,6 +4,7 @@ import yt_dlp
 import asyncio
 import copy
 import logging
+import os
 
 from fastapi import APIRouter, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
