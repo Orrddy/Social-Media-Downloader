@@ -113,8 +113,7 @@ async def stream_media(
         if is_manifest:
             return await ffmpeg_service.stream_video_ffmpeg(cdn_url, filename)
 
-        # Initialize the client first to grab headers BEFORE response stream setup
-        client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
+        import http.cookiejar
         
         # critically important: yt-dlp attaches CDN-specific authorization headers (including Cookies) 
         # to the specific format object. We MUST forward these or we will get a 403 Forbidden.
@@ -122,6 +121,21 @@ async def stream_media(
         http_headers = target_format.get("http_headers")
         if not http_headers:
             http_headers = base_opts.get("http_headers", {})
+            
+        # Also parse the Netscape cookies file into httpx to ensure CDN session validation passes
+        httpx_cookies = httpx.Cookies()
+        cookie_file = base_opts.get('cookiefile')
+        if cookie_file and os.path.exists(cookie_file):
+            try:
+                cj = http.cookiejar.MozillaCookieJar(cookie_file)
+                cj.load(ignore_discard=True, ignore_expires=True)
+                for cookie in cj:
+                    httpx_cookies.set(cookie.name, cookie.value, domain=cookie.domain, path=cookie.path)
+            except Exception as e:
+                logger.error(f"Failed to load httpx cookies: {e}")
+
+        # Initialize the client first to grab headers BEFORE response stream setup
+        client = httpx.AsyncClient(timeout=60.0, follow_redirects=True, cookies=httpx_cookies)
         
         req = client.build_request("GET", cdn_url, headers=http_headers)
         r = await client.send(req, stream=True)
