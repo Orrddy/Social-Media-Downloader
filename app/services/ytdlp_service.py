@@ -35,11 +35,20 @@ class YtdlpService:
                 'Referer': 'https://www.google.com/'
             }
         }
-
         # Inject cookies file at runtime if present (do not commit cookies.txt to git)
+        env_cookies = os.environ.get("YTDLP_COOKIES")
         cookie_path = os.path.join(os.getcwd(), "cookies.txt")
-        if os.path.exists(cookie_path):
+        
+        if env_cookies:
+            import tempfile
+            fd, temp_cookie_path = tempfile.mkstemp(suffix=".txt", text=True)
+            with os.fdopen(fd, 'w') as f:
+                f.write(env_cookies)
+            self._base_opts['cookiefile'] = temp_cookie_path
+            logger.info("Loaded yt-dlp cookies from YTDLP_COOKIES environment variable.")
+        elif os.path.exists(cookie_path):
             self._base_opts['cookiefile'] = cookie_path
+            logger.info("Loaded yt-dlp cookies from local cookies.txt file.")
 
     def _build_opts(self, url: str) -> Dict[str, Any]:
         """
