@@ -115,8 +115,13 @@ async def stream_media(
 
         # Initialize the client first to grab headers BEFORE response stream setup
         client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
-        opts = ytdlp_service._build_opts(url)
-        http_headers = opts.get('http_headers', {})
+        
+        # critically important: yt-dlp attaches CDN-specific authorization headers (including Cookies) 
+        # to the specific format object. We MUST forward these or we will get a 403 Forbidden.
+        base_opts = ytdlp_service._build_opts(url)
+        http_headers = target_format.get("http_headers")
+        if not http_headers:
+            http_headers = base_opts.get("http_headers", {})
         
         req = client.build_request("GET", cdn_url, headers=http_headers)
         r = await client.send(req, stream=True)
