@@ -1,13 +1,13 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
-from typing import List, Union, Any
+from typing import List, Any
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Media Downloader API"
-    # Use Any for initial parsing to avoid EnvSettingsSource errors
     ALLOWED_HOSTS: Any = ["https://orrddyhd.netlify.app", "http://localhost:3000"]
     API_V1_STR: str = "/api"
-    
+
     # Rate limiting
     RATE_LIMIT_DEFAULT: str = "5 per minute"
 
@@ -25,9 +25,9 @@ class Settings(BaseSettings):
         elif isinstance(v, list):
             return v
         return [v] if v else []
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+
+    # Use Pydantic v2 SettingsConfigDict — replaces deprecated inner `Config` class
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+
 
 settings = Settings()

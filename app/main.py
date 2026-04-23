@@ -13,13 +13,15 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
 
-# CORS — A public API needs permissive CORS. Rate limiting handles abuse.
+# CORS — restricted to ALLOWED_HOSTS defined in config / .env.
+# Previously hardcoded to "*", making ALLOWED_HOSTS a dead config value.
+# Allow wildcard only if ALLOWED_HOSTS explicitly contains "*".
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.ALLOWED_HOSTS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 # Request/response logging middleware
@@ -30,12 +32,13 @@ async def log_requests(request: Request, call_next):
     logger.info(f"Response status: {response.status_code}")
     return response
 
-# Setup Rate Limiting (global via SlowAPIMiddleware)
+# Rate Limiting (per-route via @limiter.limit decorators — no global default)
 setup_rate_limiting(app)
 
-# Include Routers
+# Routers
 app.include_router(health.router, tags=["health"])
 app.include_router(downloader.router, prefix=settings.API_V1_STR, tags=["downloader"])
+
 
 @app.get("/")
 async def root():

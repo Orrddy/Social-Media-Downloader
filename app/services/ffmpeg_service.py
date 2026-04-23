@@ -1,43 +1,45 @@
-import subprocess
-import yt_dlp
 import asyncio
+import logging
 import urllib.parse
 from fastapi.responses import StreamingResponse
-import logging
-import os
+
+from app.utils.helpers import sanitize_filename, build_content_disposition
 
 logger = logging.getLogger(__name__)
+
+# Maximum seconds to wait for FFmpeg to start producing output before aborting.
+_FFMPEG_START_TIMEOUT = 30
+# Maximum total seconds an FFmpeg process may run (prevents infinite hang on stalled CDN).
+_FFMPEG_TOTAL_TIMEOUT = 600
 
 
 class FfmpegService:
     async def stream_audio_as_mp3(self, url: str) -> StreamingResponse:
         """
         Extracts the best audio stream URL via yt-dlp and pipes it through
-        FFmpeg to produce an MP3 stream. Returned as a StreamingResponse.
+        FFmpeg to produce an MP3 stream returned as a StreamingResponse.
         """
+        from app.services.ytdlp_service import ytdlp_service
         try:
-            from app.services.ytdlp_service import ytdlp_service
             stream_url, title = await ytdlp_service.get_best_audio_info(url)
         except Exception as e:
-            logger.error(f"Error getting stream URL for audio: {e}")
-            raise Exception(f"Failed to get audio stream: {str(e)}")
+            logger.error(f"Failed to get audio stream URL for {url}: {e}", exc_info=True)
+            raise RuntimeError("Failed to get audio stream.") from e
 
-        # FFmpeg command: read from stream URL, output MP3 to stdout
         command = [
             'ffmpeg',
             '-i', stream_url,
-            '-vn',           # no video
-            '-ar', '44100',  # sample rate
-            '-ac', '2',      # stereo
-            '-b:a', '192k',  # bitrate
+            '-vn',
+            '-ar', '44100',
+            '-ac', '2',
+            '-b:a', '192k',
             '-f', 'mp3',
-            'pipe:1'         # stdout
+            'pipe:1'
         ]
 
-        # stderr → DEVNULL to prevent OS pipe-buffer deadlock.
-        # When stderr fills its buffer (~64 KB) and is never read, FFmpeg blocks
-        # waiting for the parent to drain it — causing the streaming generator
-        # to deadlock on stdout. Discarding stderr avoids this entirely.
+        # stderr → DEVNULL prevents OS pipe-buffer deadlock:
+        # when stderr fills its ~64 KB buffer and is never drained, FFmpeg blocks
+        # waiting for the parent — deadlocking stdout. Discarding stderr avoids this.
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -45,51 +47,54 @@ class FfmpegService:
         )
 
         async def generate():
+            start_ok = False
             try:
+                # First-byte timeout — kills stalled FFmpeg processes early
+                first_chunk = await asyncio.wait_for(
+                    process.stdout.read(65536),
+                    timeout=_FFMPEG_START_TIMEOUT
+                )
+                if not first_chunk:
+                    return
+                yield first_chunk
+                start_ok = True
+
                 while True:
-                    chunk = await process.stdout.read(65536)  # 64 KB chunks
+                    chunk = await process.stdout.read(65536)
                     if not chunk:
                         break
                     yield chunk
+            except asyncio.TimeoutError:
+                logger.error("FFmpeg audio process timed out waiting for first byte.")
             except asyncio.CancelledError:
-                pass  # Request cut off
+                pass  # Client disconnected
             except Exception as e:
-                logger.error(f"Audio streaming error: {e}")
+                logger.error(f"Audio streaming error: {e}", exc_info=True)
             finally:
                 if process.returncode is None:
                     try:
                         process.kill()
-                        await process.wait()  # <--- REQUIRED to reap the zombie UNIX process
+                        # shield prevents a second CancelledError from leaving a zombie
+                        await asyncio.shield(process.wait())
                     except ProcessLookupError:
-                        pass  # Process already exited — acceptable
+                        pass
                     except Exception as kill_err:
-                        logger.warning(f"Could not kill FFmpeg process: {kill_err}")
+                        logger.warning(f"Could not kill FFmpeg audio process: {kill_err}")
 
-        # Build a safe ASCII filename with UTF-8 fallback (RFC 5987)
-        safe_title = "".join(
-            c for c in title if c.isalnum() or c in (' ', '-', '_')
-        ).strip()[:50] or "audio"
+        safe_title = sanitize_filename(title, fallback="audio")
         filename = f"{safe_title}.mp3"
-        encoded_filename = urllib.parse.quote(filename)
 
         return StreamingResponse(
             generate(),
             media_type="audio/mpeg",
-            headers={
-                # filename= is ASCII-safe; filename*= carries the full UTF-8 name (RFC 5987)
-                "Content-Disposition": (
-                    f'attachment; filename="{filename.encode("ascii", "ignore").decode()}"; '
-                    f"filename*=UTF-8''{encoded_filename}"
-                )
-            }
+            headers={"Content-Disposition": build_content_disposition(filename)}
         )
 
     async def stream_video_ffmpeg(self, stream_url: str, filename: str) -> StreamingResponse:
         """
-        Pipes an M3U8 or DASH stream through FFmpeg and exports directly as an MP4 byte stream.
-        This provides compatibility for Instagram/Twitter videos that exclusively use manifests.
+        Pipes an M3U8 or DASH manifest stream through FFmpeg and exports as
+        fragmented MP4. Required for Instagram/Twitter manifest-only videos.
         """
-        # FFmpeg command: stream input, copy codecs, fragment it to allow piped MP4 streaming
         command = [
             'ffmpeg',
             '-i', stream_url,
@@ -107,35 +112,39 @@ class FfmpegService:
 
         async def generate():
             try:
+                first_chunk = await asyncio.wait_for(
+                    process.stdout.read(65536),
+                    timeout=_FFMPEG_START_TIMEOUT
+                )
+                if not first_chunk:
+                    return
+                yield first_chunk
+
                 while True:
                     chunk = await process.stdout.read(65536)
                     if not chunk:
                         break
                     yield chunk
+            except asyncio.TimeoutError:
+                logger.error("FFmpeg video process timed out waiting for first byte.")
             except asyncio.CancelledError:
                 pass
             except Exception as e:
-                logger.error(f"FFmpeg MP4 streaming error: {e}")
+                logger.error(f"FFmpeg MP4 streaming error: {e}", exc_info=True)
             finally:
                 if process.returncode is None:
                     try:
                         process.kill()
-                        await process.wait()
+                        await asyncio.shield(process.wait())
                     except ProcessLookupError:
                         pass
                     except Exception as kill_err:
-                        logger.warning(f"Could not kill FFmpeg process: {kill_err}")
+                        logger.warning(f"Could not kill FFmpeg video process: {kill_err}")
 
-        encoded_filename = urllib.parse.quote(filename)
         return StreamingResponse(
             generate(),
             media_type="video/mp4",
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="{filename.encode("ascii", "ignore").decode()}"; '
-                    f"filename*=UTF-8''{encoded_filename}"
-                )
-            }
+            headers={"Content-Disposition": build_content_disposition(filename)}
         )
 
 

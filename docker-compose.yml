@@ -3,15 +3,17 @@ version: "3.8"
 services:
   api:
     build: .
+    # Port must match the Dockerfile CMD (uvicorn --port 10000)
+    # Previously mapped 8000:8000, which silently failed to connect.
     ports:
-      - "8000:8000"
+      - "10000:10000"
     volumes:
       - .:/app
     environment:
       - PROJECT_NAME=Media Downloader API Local
       - ALLOWED_HOSTS=["http://localhost:3000", "http://127.0.0.1:5500", "http://localhost:8080"]
       - RATE_LIMIT_DEFAULT=100 per minute
-    # Uncomment to map a local cookies file explicitly
+    # To use a local cookies file, uncomment and point to your file:
     # secrets:
     #   - source: yt_cookies
     #     target: /app/cookies.txt
