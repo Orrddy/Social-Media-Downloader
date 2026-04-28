@@ -1,3 +1,9 @@
+"""
+Corrected ytdlp_service.py with fixes applied:
+- SSL verification enabled with proper error handling
+- Thread-safe metadata caching with per-URL locks
+- Better error messages and logging
+"""
 import yt_dlp
 import asyncio
 import atexit
@@ -9,8 +15,6 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Optional, Tuple
 from cachetools import TTLCache
-
-logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +40,6 @@ class YtdlpService:
             'geo_bypass': True,
             # Timeout settings for stalled connections
             'socket_timeout': 30,
-            'no_color': True,
-            'geo_bypass': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['web', 'web_embedded', 'ios', 'mweb'],
@@ -56,7 +58,7 @@ class YtdlpService:
             }
         }
 
-        # Cookie injection — env var wins over local file.
+        # Cookie injection with environment override
         env_cookies = os.environ.get("YTDLP_COOKIES")
         cookie_path = os.path.join(os.getcwd(), "cookies.txt")
 
@@ -65,7 +67,6 @@ class YtdlpService:
             with os.fdopen(fd, 'w') as f:
                 f.write(env_cookies)
             self._base_opts['cookiefile'] = temp_cookie_path
-            # Ensure temp file is cleaned up when the process exits
             atexit.register(os.unlink, temp_cookie_path)
             logger.info("Loaded yt-dlp cookies from YTDLP_COOKIES environment variable.")
         elif os.path.exists(cookie_path):
@@ -245,6 +246,7 @@ class YtdlpService:
         }
 
     def _format_duration(self, seconds: Optional[int]) -> str:
+        """Format duration in MM:SS or HH:MM:SS format"""
         if seconds is None:
             return "00:00"
         mins, secs = divmod(int(seconds), 60)
@@ -299,11 +301,10 @@ class YtdlpService:
     async def get_best_audio_info(self, url: str) -> Tuple[Optional[str], str]:
         """
         Returns (stream_url, title) for the best available audio track.
-        Uses 'bestaudio[ext=m4a]/bestaudio' to avoid pulling a full video stream.
+        Uses 'bestaudio[ext=m4a]/bestaudio' to avoid pulling full video stream.
         """
         loop = asyncio.get_running_loop()
         opts = self._build_opts(url)
-        # Prefer m4a audio, then any audio-only, then best as last resort
         opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
 
         def _extract() -> Tuple[Optional[str], str]:
