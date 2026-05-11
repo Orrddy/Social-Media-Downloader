@@ -1,11 +1,3 @@
-"""
-Corrected downloader.py endpoint with fixes applied:
-- Input validation with Pydantic enums and constraints
-- SSRF protection with CDN URL validation
-- Metadata reuse to avoid double extraction
-- Proper error handling with specific status codes
-- Safe logging without sensitive data
-"""
 import http.cookiejar
 import urllib.parse
 import httpx
@@ -102,8 +94,8 @@ def validate_cdn_url(url: str) -> bool:
         )
 
         if not is_known:
-            logger.debug(f"CDN domain not in standard whitelist, checking origin: {domain}")
-            # Allow if it passes the IP checks above - this is defense in depth
+            logger.warning(f"CDN domain not in whitelist, blocking: {domain}")
+            return False
 
         return True
 
@@ -208,6 +200,8 @@ async def get_download_options(request: Request, body: DownloadRequest):
     try:
         logger.info(f"Metadata extraction requested")
         data = await ytdlp_service.get_metadata(url)
+        # Strip internal-only field before sending to client
+        data.pop("_raw_formats", None)
         return data
     except RuntimeError as e:
         logger.error(f"Metadata extraction failed: {str(e)[:100]}")

@@ -1,10 +1,3 @@
-"""
-Corrected main.py with fixes applied:
-- Safe logging without sensitive data
-- Better CORS configuration with credential support
-- Health check endpoint
-- Rate limit response headers
-"""
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -136,19 +129,7 @@ async def root():
     }
 
 
-@app.get("/health")
-async def health_check():
-    """
-    ✅ Simple health check endpoint
-    Returns 200 if service is operational
-    """
-    return {
-        "status": "healthy",
-        "service": settings.PROJECT_NAME
-    }
-
-
-# ✅ Error handlers with safe logging
+# Error handlers with safe logging
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Catch-all exception handler with safe logging"""

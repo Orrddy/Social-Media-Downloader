@@ -1,9 +1,3 @@
-"""
-Corrected ffmpeg_service.py with fixes applied:
-- Robust process cleanup preventing zombies
-- Better timeout handling with force kill fallback
-- Code deduplication via shared generator factory
-"""
 import asyncio
 import logging
 import subprocess
@@ -148,6 +142,11 @@ class FfmpegService:
         except Exception as e:
             logger.error(f"Failed to get audio stream URL: {e}", exc_info=True)
             raise RuntimeError("Failed to get audio stream.") from e
+
+        from app.api.endpoints.downloader import validate_cdn_url
+        if not validate_cdn_url(stream_url):
+            logger.error("Audio stream URL failed CDN validation")
+            raise RuntimeError("Invalid audio stream URL")
 
         # FFmpeg command for MP3 conversion
         command = [

@@ -12,8 +12,6 @@ from cachetools import TTLCache
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 # Bounded executor prevents unbounded thread spawning under concurrent load
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdlp")
 
@@ -36,8 +34,6 @@ class YtdlpService:
             'geo_bypass': True,
             # Timeout settings for stalled connections
             'socket_timeout': 30,
-            'no_color': True,
-            'geo_bypass': True,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['web', 'web_embedded', 'ios', 'mweb'],
@@ -241,7 +237,10 @@ class YtdlpService:
             "thumbnail": info.get("thumbnail"),
             "duration": self._format_duration(info.get("duration")),
             "platform": info.get("extractor_key", "unknown").lower(),
-            "formats": formats
+            "formats": formats,
+            # Internal: raw format list kept for get_stream_url fast-path CDN URL lookup.
+            # Not serialised to the API response.
+            "_raw_formats": raw_formats,
         }
 
     def _format_duration(self, seconds: Optional[int]) -> str:
@@ -261,17 +260,24 @@ class YtdlpService:
     ) -> Tuple[Optional[str], Dict, str]:
         """
         Resolves a live CDN URL for the given format_id.
-        
-        ✅ FIXED: Optionally accepts pre-fetched metadata to avoid double extraction
-        
-        Args:
-            url: Source URL
-            format_id: Format ID to resolve (if None, uses 'best')
-            metadata: Optional pre-fetched metadata to avoid re-extraction
-        
+
+        When metadata is provided (already fetched by the caller) the function
+        scans the raw formats dict directly, avoiding a second yt-dlp extraction.
+
         Returns:
             (cdn_url, http_headers, ext)
         """
+        # Fast path: caller already has metadata — find the format URL directly
+        if metadata and format_id and '_raw_formats' in metadata:
+            raw_formats = metadata['_raw_formats']
+            for f in raw_formats:
+                if f.get('format_id') == format_id and f.get('url'):
+                    cdn_url = f['url']
+                    http_headers = f.get('http_headers', {})
+                    ext = f.get('ext', 'mp4') or 'mp4'
+                    return cdn_url, http_headers, ext
+
+        # Standard path: run yt-dlp to resolve the CDN URL
         loop = asyncio.get_running_loop()
         opts = self._build_opts(url)
         opts['format'] = format_id if format_id else 'best'
@@ -280,12 +286,10 @@ class YtdlpService:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
 
-            # Prefer top-level url (set when format is resolved to single stream)
             cdn_url = info.get('url')
             http_headers = info.get('http_headers', {})
             ext = info.get('ext', 'mp4')
 
-            # Fall back to last format entry if no direct URL
             if not cdn_url and info.get('formats'):
                 last_fmt = info['formats'][-1]
                 cdn_url = last_fmt.get('url')
